@@ -1,0 +1,2 @@
+useDynLib(casslite, OC_query_prepare, OC_query_exec)
+export(cl.execute, cl.prepare)

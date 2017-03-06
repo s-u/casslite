@@ -1,0 +1,2 @@
+PKG_LIBS=/usr/common/R/lib/libcassandra_static.a /usr/common/R/lib/libuv.a -lrt -pthread
+PKG_CPPFLAGS=-I/usr/common/R/include

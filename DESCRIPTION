@@ -1,0 +1,7 @@
+Package: casslite
+Title: Very light-weight and specialized Cassandra client
+Version: 0.1-0
+Author: Simon Urbanek <urbanek@research.att.com>
+Maintainer: Simon Urbanek <urbanek@research.att.com>
+Description: Functions to access the Cassandra database
+License: MIT + file LICENSE
