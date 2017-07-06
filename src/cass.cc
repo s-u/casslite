@@ -81,55 +81,29 @@ extern "C" SEXP OC_query_prepare(SEXP sWhere, SEXP sQuery) {
     return res;
 }
 
-/* query, columns(integer bitmask), ... */
-extern "C" SEXP OC_query_exec(SEXP sPar) {
-    sPar = CDR(sPar);
-    SEXP sQuery = CAR(sPar);
-    sPar = CDR(sPar);
-    if (!inherits(sQuery, "casslitePreparedQuery"))
-	Rf_error("invalid prepared query object");
-    
-    tquery_t *q = (tquery_t*) R_ExternalPtrAddr(sQuery);
+typedef struct tquery_future {
+    CassFuture *future;
+    int ncol;
+} tquery_future_t;
 
-    int cols = asInteger(CAR(sPar));
-    sPar = CDR(sPar);
-    
-    /* The prepared object can now be used to create statements that can be executed */
-    CassStatement* statement = cass_prepared_bind(q->prepared);
-
-    SEXP sVal;
-    int pos = 0;
-    while ((sVal = CAR(sPar)) != R_NilValue) {
-	if (TYPEOF(sVal) == STRSXP)
-	    cass_statement_bind_string(statement, pos, CHAR(STRING_ELT(sVal, 0)));
-	else if (TYPEOF(sVal) == RAWSXP)
-	    cass_statement_bind_bytes(statement, pos, RAW(sVal), XLENGTH(sVal));
-	else if (TYPEOF(sVal) == INTSXP)
-	    cass_statement_bind_int32(statement, pos, asInteger(sVal));
-	else if (TYPEOF(sVal) == REALSXP)
-	    cass_statement_bind_double(statement, pos, asReal(sVal));
-	else
-	    cass_statement_bind_null(statement, pos);
-	pos++;
-	sPar = CDR(sPar);
-    }
-
-    /* Execute statement (same a the non-prepared code) */
-    CassFuture* query_future = cass_session_execute(q->session, statement);
-
-    /* Statement objects can be freed immediately after being executed */
-    cass_statement_free(statement);
+static SEXP query_collect(tquery_future_t *q) {
+    CassFuture *query_future = q->future;
+    int cols = q->ncol;
+    if (!query_future)
+	Rf_error("the result has been already collected");
 
     /* This will block until the query has finished */
     CassError rc = cass_future_error_code(query_future);
 
     if (rc) {
 	cass_future_free(query_future);
+	q->future = 0;
 	Rf_error("Failed insert statement: %s", cass_error_desc(rc));
     }
 
     if (cols == 0) { /* no result required */
 	cass_future_free(query_future);
+	q->future = 0;
 	return ScalarLogical(1);
     }
 
@@ -140,12 +114,14 @@ extern "C" SEXP OC_query_exec(SEXP sPar) {
     if (result == NULL) {
 	/* Handle error */
 	cass_future_free(query_future);
+	q->future = 0;
 	Rf_error("Failed select statement: %s",
 		 cass_error_desc(rc));
     }
 
     /* The future can be freed immediately after getting the result object */
     cass_future_free(query_future);
+    q->future = 0;
 
     size_t nrows = cass_result_row_count(result);
 
@@ -177,7 +153,7 @@ extern "C" SEXP OC_query_exec(SEXP sPar) {
     if (cols & 2) { sTS = SET_VECTOR_ELT(sRes, ci, allocVector(REALSXP, nrows)); ci++; }
     SEXP sAttr = R_NilValue;
     if (cols & 4) { sAttr = SET_VECTOR_ELT(sRes, ci, allocVector(STRSXP, nrows)); ci++; }
-    sVal  = R_NilValue;
+    SEXP sVal  = R_NilValue;
     if (cols & 8) { sVal = SET_VECTOR_ELT(sRes, ci, allocVector(STRSXP, nrows)); ci++; }
     double *ts_d = (sTS != R_NilValue) ? REAL(sTS) : 0;
     
@@ -230,4 +206,97 @@ extern "C" SEXP OC_query_exec(SEXP sPar) {
     Rf_setAttrib(sRes, R_RowNamesSymbol, sRN);
     UNPROTECT(2);
     return sRes;
+}
+
+/* query, columns(integer bitmask), ... */
+static CassFuture *OC_query_exec_(SEXP sPar, int *cols) {
+    sPar = CDR(sPar);
+    SEXP sQuery = CAR(sPar);
+    sPar = CDR(sPar);
+    if (!inherits(sQuery, "casslitePreparedQuery"))
+	Rf_error("invalid prepared query object");
+
+    tquery_t *q = (tquery_t*) R_ExternalPtrAddr(sQuery);
+
+    cols[0] = asInteger(CAR(sPar));
+    sPar = CDR(sPar);
+
+    /* The prepared object can now be used to create statements that can be executed */
+    CassStatement* statement = cass_prepared_bind(q->prepared);
+
+    SEXP sVal;
+    int pos = 0;
+    while ((sVal = CAR(sPar)) != R_NilValue) {
+	if (TYPEOF(sVal) == STRSXP)
+	    cass_statement_bind_string(statement, pos, CHAR(STRING_ELT(sVal, 0)));
+	else if (TYPEOF(sVal) == RAWSXP)
+	    cass_statement_bind_bytes(statement, pos, RAW(sVal), XLENGTH(sVal));
+	else if (TYPEOF(sVal) == INTSXP)
+	    cass_statement_bind_int32(statement, pos, asInteger(sVal));
+	else if (TYPEOF(sVal) == REALSXP)
+	    cass_statement_bind_double(statement, pos, asReal(sVal));
+	else
+	    cass_statement_bind_null(statement, pos);
+	pos++;
+	sPar = CDR(sPar);
+    }
+
+    /* Execute statement (same a the non-prepared code) */
+    CassFuture* query_future = cass_session_execute(q->session, statement);
+
+    /* Statement objects can be freed immediately after being executed */
+    cass_statement_free(statement);
+
+    return query_future;
+}
+
+extern "C" SEXP OC_query_exec(SEXP sPar) {
+    tquery_future_t q = { 0, 0 };
+    q.future = OC_query_exec_(sPar, &q.ncol);
+    return query_collect(&q);
+}
+
+static void fin_tquery_future(SEXP ref) {
+    tquery_future_t *q = (tquery_future_t*) R_ExternalPtrAddr(ref);
+    if (q) {
+	if (q->future) {
+	    cass_future_free(q->future);
+	    q->future = 0;
+	}
+	free(q);
+    }
+}
+
+extern "C" SEXP OC_query_exec_async(SEXP sPar) {
+    tquery_future_t *qf = (tquery_future_t*) malloc(sizeof(tquery_future_t));
+    if (!qf)
+	Rf_error("unable to allocate memory for query future on the R side");
+    qf->future = OC_query_exec_(sPar, &(qf->ncol));
+
+    SEXP res = PROTECT(R_MakeExternalPtr(qf, R_NilValue, R_NilValue));
+    R_RegisterCFinalizerEx(res, fin_tquery_future, TRUE);
+    setAttrib(res, R_ClassSymbol, mkString("cassliteQueryFuture"));
+    UNPROTECT(1);
+
+    return res;
+}
+
+extern "C" SEXP OC_query_is_ready(SEXP sQuery) {
+    if (!inherits(sQuery, "cassliteQueryFuture") || TYPEOF(sQuery) != EXTPTRSXP)
+	Rf_error("invalid query future object");
+    tquery_future_t *q = (tquery_future_t*) R_ExternalPtrAddr(sQuery);
+    if (!q->future)
+	Rf_error("the result has been already retrieved");
+    return ScalarLogical(cass_future_ready(q->future) ? 1 : 0);
+}
+
+extern "C" SEXP OC_query_collect(SEXP sQuery) {
+    if (!inherits(sQuery, "cassliteQueryFuture") || TYPEOF(sQuery) != EXTPTRSXP)
+	Rf_error("invalid query future object");
+    tquery_future_t *q = (tquery_future_t*) R_ExternalPtrAddr(sQuery);
+    if (!q->future)
+	Rf_error("the result has been already retrieved");
+    SEXP res = query_collect(q);
+    q->future = 0;
+    return res;
 }

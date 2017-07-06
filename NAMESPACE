@@ -1,2 +1,2 @@
-useDynLib(casslite, OC_query_prepare, OC_query_exec)
-export(cl.execute, cl.prepare)
+useDynLib(casslite, OC_query_prepare, OC_query_exec, OC_query_exec_async, OC_query_is_ready, OC_query_collect)
+export(cl.execute, cl.prepare, cl.is.ready, cl.collect)
