@@ -233,9 +233,12 @@ static CassFuture *OC_query_exec_(SEXP sPar, int *cols) {
 	    cass_statement_bind_bytes(statement, pos, RAW(sVal), XLENGTH(sVal));
 	else if (TYPEOF(sVal) == INTSXP)
 	    cass_statement_bind_int32(statement, pos, asInteger(sVal));
-	else if (TYPEOF(sVal) == REALSXP)
-	    cass_statement_bind_double(statement, pos, asReal(sVal));
-	else
+	else if (TYPEOF(sVal) == REALSXP) {
+	    if (inherits(sVal, "POSIXct"))
+		cass_statement_bind_int64(statement, pos, (long)(asReal(sVal) * 1000.0));
+	    else
+		cass_statement_bind_double(statement, pos, asReal(sVal));
+	} else
 	    cass_statement_bind_null(statement, pos);
 	pos++;
 	sPar = CDR(sPar);
